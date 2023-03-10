@@ -32,15 +32,13 @@ class StockCommandExecuteHandler(adsk.core.CommandEventHandler):
             design = adsk.fusion.Design.cast(product)
             if not design:
                 ui.messageBox(
-                'It is not supported in current workspace, please change to MODEL workspace and try again.')
+                'It is not supported in current workspace, please change to DESIGN workspace and try again.')
                 return
             if design.rootComponent.customGraphicsGroups.count > 0:
                 design.rootComponent.customGraphicsGroups.item(0).deleteMe()
                 app.activeViewport.refresh()
             global _cgGroups
             _cgGroups = design.rootComponent.customGraphicsGroups
-
-            unitsMgr = app.activeProduct.unitsManager
             command = args.firingEvent.sender
             _inputs = command.commandInputs
 
@@ -72,7 +70,7 @@ class StockCommandExecuteHandler(adsk.core.CommandEventHandler):
                 if input.id == "relAddZNeg":
                     offsets[5] = input.value
             stock.offsets = offsets
-            stock.getBounds(args, True)
+            stock.getBounds(True)
             args.isValidResult = True
         except:
             if ui:
@@ -86,10 +84,18 @@ class inputChangedHandler(adsk.core.InputChangedEventHandler):
     def notify(self, args):
         try:
             global _inputs, _manipulationPoint
-            unitsMgr = app.activeProduct.unitsManager
             command = args.firingEvent.sender
             _inputs = command.commandInputs
             stock = Stock()
+            selectedGeometry = _inputs.itemById('machinedParts')
+            numSelections = selectedGeometry.selectionCount
+            collSet = adsk.core.ObjectCollection.create()
+            for x in range(numSelections):
+                collSet.add(selectedGeometry.selection(x).entity)
+                stock.bodies = collSet
+            if args.input.id == 'optimize':
+                newAngle = optimizeAngle(stock)
+                _inputs.itemById('angleVal').value = newAngle
             offsets = [0,0,0,0,0,0]
             for input in _inputs:
                 if input.id == 'stype':
@@ -117,17 +123,14 @@ class inputChangedHandler(adsk.core.InputChangedEventHandler):
                 if input.id == "relAddZNeg":
                     offsets[5] = input.value
             stock.offsets = offsets
-            bounds = stock.getBounds(args, False)
-            xSize = round(abs(bounds.maxPoint.x - bounds.minPoint.x) + offsets[0] + offsets[1], 4) * 10
-            ySize = round(abs(bounds.maxPoint.y - bounds.minPoint.y) + offsets[2] + offsets[3], 4) * 10
-            zSize = round(abs(bounds.maxPoint.z - bounds.minPoint.z) + offsets[4] + offsets[5], 4) * 10
+            bounds = stock.getBounds(False)
+            xSize = "%.3f" % (abs(bounds.maxPoint.x - bounds.minPoint.x) + offsets[0] + offsets[1] * 10)
+            ySize = "%.3f" % (abs(bounds.maxPoint.y - bounds.minPoint.y) + offsets[2] + offsets[3] * 10)
+            zSize = "%.3f" % (abs(bounds.maxPoint.z - bounds.minPoint.z) + offsets[4] + offsets[5] * 10)
             _inputs.itemById('sizeInfo').formattedText = 'X:' + str(xSize) + '\nY:' + str(ySize) + '\nZ:' + str(zSize)
             setFormVisibilities(bounds, stock.angleInp, args)
 
-            for input in _inputs:
-                if input.id == 'stype':
-                    #stock.stockType = input.selectedItem.name
-                    a = 1
+
         except:
             if ui:
                 ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
@@ -140,7 +143,10 @@ def setFormVisibilities(bounds, angle, args):
         angleManip = _inputs.itemById("angleVal")
         angleManip.isVisible = True
         angleManip.setManipulator(_manipulationPoint, adsk.core.Vector3D.create(1, 0, 0), adsk.core.Vector3D.create(0, 1, 0))
-        
+        sizeInfo = _inputs.itemById("sizeInfo")
+        sizeInfo.isVisible = True
+        optimizeAngle = _inputs.itemById("optimize")
+        optimizeAngle.isVisible = True
         additionalXPos = _inputs.itemById("relAddXPos")
         xPosDir = adsk.core.Vector3D.create(1, 0, 0)
         point = adsk.core.Point3D.create(bounds.maxPoint.x, _manipulationPoint.y, bounds.minPoint.z + ((bounds.maxPoint.z - bounds.minPoint.z) / 2))
@@ -245,6 +251,19 @@ def makeStock():
                 colorProp.value = adsk.core.Color.create(255, 255, 0, 0)
         bodyAdded.appearance = newColor
    
+def optimizeAngle(stock):
+    smallestArea = None
+    chosenAngle = 0
+    stock.offsets = [0,0,0,0,0,0]
+    for i in range(45):
+        stock.angleInp = i
+        bounds = stock.getBounds(False)
+        sizeOfStock = abs(bounds.maxPoint.x - bounds.minPoint.x) * abs(bounds.maxPoint.y - bounds.minPoint.y)
+        if smallestArea == None or sizeOfStock < smallestArea:
+            smallestArea = sizeOfStock
+            chosenAngle = i
+    return chosenAngle
+    
 
 class StockCommandDestroyHandler(adsk.core.CommandEventHandler):
     def __init__(self):
@@ -297,7 +316,8 @@ class StockCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             selectionInput.addSelectionFilter("Bodies")
             selectionInput.addSelectionFilter("MeshBodies")
 
-            _inputs.addTextBoxCommandInput('sizeInfo', 'Size', 'X:\nY:\nZ:', 3, True)
+            sizeInfo = _inputs.addTextBoxCommandInput('sizeInfo', 'Size', 'X:\nY:\nZ:', 3, True)
+            sizeInfo.isVisible = False
             additionalX = _inputs.addDistanceValueCommandInput("relAddXPos", "Offset X-", adsk.core.ValueInput.createByString('0 mm'))
             additionalX.isVisible = False
             additionalX = _inputs.addDistanceValueCommandInput("relAddXNeg", "Offset X-", adsk.core.ValueInput.createByString('0 mm'))
@@ -310,10 +330,13 @@ class StockCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             additionalZ.isVisible = False
             additionalZ = _inputs.addDistanceValueCommandInput("relAddZNeg", "Offset Z-", adsk.core.ValueInput.createByString('0 mm'))
             additionalZ.isVisible = False
-        
+
+
             global _angleInput
             _angleInput = _inputs.addAngleValueCommandInput("angleVal", "Angle", adsk.core.ValueInput.createByString('0 degree'))
             _angleInput.isVisible = False
+            _optimizeAngle = _inputs.addBoolValueInput('optimize', 'Optimize angle', False, '', False)
+            _optimizeAngle.isVisible = False
 
         except:
             if ui:
@@ -366,7 +389,7 @@ class Stock:
     def offsets(self, value):
         self._offsets = value
 
-    def getBounds(self, args, preview):
+    def getBounds(self, preview):
         global _manipulationPoint
         maxBoundingBox = adsk.core.BoundingBox3D.create(adsk.core.Point3D.create(0,0,0), adsk.core.Point3D.create(0,0,0))
         if self.bodies.count > 0:
@@ -485,7 +508,6 @@ def stop(context):
     try:
         app = adsk.core.Application.get()
         ui  = app.userInterface
-
         if ui.commandDefinitions.itemById('StockCreation'):
             ui.commandDefinitions.itemById('StockCreation').deleteMe()
         solidPanel = ui.allToolbarPanels.itemById('SolidCreatePanel')
